@@ -1,30 +1,29 @@
-name: Deploy from latest release to Pages
+name: Publish site into main (for Pages from branch)
 
 on:
-  # Run when a release is published, and allow manual runs
   release:
     types: [published]
   workflow_dispatch:
 
 permissions:
-  contents: read       # read releases
-  pages: write         # deploy to Pages
-  id-token: write      # required by actions/deploy-pages
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
+  contents: write   # 需要能 push 回 main
 
 jobs:
-  deploy:
+  publish:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      # GitHub Pages 的來源資料夾：
+      # - 用 /docs：PAGES_DIR=docs（建議）
+      # - 用根目錄：PAGES_DIR='.'
+      PAGES_DIR: docs
 
     steps:
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Download latest release ZIP(s)
         uses: robinraju/release-downloader@v1
@@ -36,8 +35,10 @@ jobs:
 
       - name: Collect site files (flatten)
         run: |
+          set -euo pipefail
           mkdir -p site
           rm -f download/*.zip || true
+
           # 若只有一個最外層資料夾，提升其內容；否則把所有解壓內容搬到 site/
           if [ "$(find download -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq "1" ]; then
             d="$(find download -mindepth 1 -maxdepth 1 -type d)"
@@ -45,13 +46,35 @@ jobs:
           else
             shopt -s dotglob && mv download/* site/ || true
           fi
+
+          # 基本健檢：至少要有首頁
           test -f site/index.html || { echo "index.html not found"; exit 1; }
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: site
+      - name: Copy into ${{ env.PAGES_DIR }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${PAGES_DIR}"
+          # 同步站檔到 PAGES_DIR；排除 repo/CI 自身的檔案
+          rsync -av --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            site/ "${PAGES_DIR}/"
 
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Commit & push to main (Pages dir only)
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 只加入 Pages 來源資料夾，避免把 download/、site/ 推上去
+          git add -A "${PAGES_DIR}"
+
+          # 若 staged 沒變化就跳過
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          msg="Update Pages content from release ${GITHUB_REF_NAME:-manual}"
+          git commit -m "$msg"
+          git push

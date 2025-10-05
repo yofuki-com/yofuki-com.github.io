@@ -1,0 +1,57 @@
+name: Deploy from latest release to Pages
+
+on:
+  # Run when a release is published, and allow manual runs
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read       # read releases
+  pages: write         # deploy to Pages
+  id-token: write      # required by actions/deploy-pages
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Download latest release ZIP(s)
+        uses: robinraju/release-downloader@v1
+        with:
+          latest: true
+          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產
+          out-file-path: download
+          extract: true              # 自動解壓到 download/
+
+      - name: Collect site files (flatten)
+        run: |
+          mkdir -p site
+          rm -f download/*.zip || true
+          # 若只有一個最外層資料夾，提升其內容；否則把所有解壓內容搬到 site/
+          if [ "$(find download -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq "1" ]; then
+            d="$(find download -mindepth 1 -maxdepth 1 -type d)"
+            shopt -s dotglob && mv "$d"/* site/ || true
+          else
+            shopt -s dotglob && mv download/* site/ || true
+          fi
+          test -f site/index.html || { echo "index.html not found"; exit 1; }
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
